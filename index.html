@@ -1,0 +1,1275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>3D Frame Modal Analysis (Modes 1–3)</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/numeric/1.2.6/numeric.min.js"></script>
+<style>
+  :root{
+    --bg:#ffffff;
+    --panel:#f5f6f8;
+    --panel2:#ffffff;
+    --line:#d7dbe3;
+    --text:#111827;
+    --muted:#5b6472;
+    --accent:#2563eb;
+    --warn:#b45309;
+    --err:#b91c1c;
+    --ok:#166534;
+  }
+  html,body{height:100%; margin:0; font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif; background:var(--bg); color:var(--text);}
+  #app{height:100%; display:grid; grid-template-columns: 390px 1fr; grid-template-rows: 1fr; gap:10px; padding:10px; box-sizing:border-box;}
+  #ui{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; box-sizing:border-box; overflow-y:auto;}
+  #rightColumn{display:flex; flex-direction:column; gap:10px; min-width:0;}
+  #viewportWrap{flex:1; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:8px; box-sizing:border-box; display:flex; flex-direction:column; gap:6px; min-height:400px;}
+  #canvas{width:100%; height:100%; background:#ffffff; border:1px solid var(--line); border-radius:8px; display:block;}
+  h3{margin:0 0 8px 0; font-size:14px; font-weight:700;}
+  .sectionTitle{font-size:12px; font-weight:700; margin:10px 0 6px; color:#1f2937;}
+  button{width:100%; padding:8px 10px; border-radius:8px; border:1px solid #cfd6e2; background:#ffffff; color:var(--text); font-weight:700; cursor:pointer;}
+  button:hover{border-color:#b9c3d6;}
+  button:disabled{opacity:0.55; cursor:not-allowed;}
+  textarea{width:100%; box-sizing:border-box; min-height:84px; max-height:180px; resize:vertical; padding:8px; border-radius:8px; border:1px solid #cfd6e2; background:#ffffff; color:var(--text);
+           font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11px; line-height:1.2;}
+  .hint{font-size:12px; color:var(--muted); line-height:1.25; margin:8px 0;}
+  .small{font-size:12px; color:var(--muted);}
+  .badge{display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid #cfd6e2; background:#ffffff; font-size:12px; color:var(--muted);}
+  #summary{display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;}
+  #log{margin-top:10px; padding:8px; background:#ffffff; border:1px solid var(--line); border-radius:8px; height:220px; overflow:auto; font-size:12px; line-height:1.25; white-space:pre-wrap;}
+  .log-warn{color:var(--warn);} .log-err{color:var(--err);} .log-ok{color:var(--ok);}
+  #vpBar{display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--muted); padding:0 2px;}
+  #selInfo{font-size:11px; color:var(--text); min-height:16px; padding:4px 6px; background:rgba(255,255,255,0.9); border-radius:6px; font-weight:500; line-height:1.3; word-break:break-word;}
+
+  .row{display:flex; gap:8px;}
+  .row > *{flex:1;}
+  select,input[type="number"]{
+    width:100%; box-sizing:border-box; padding:6px 8px; border-radius:8px; border:1px solid #cfd6e2; background:#fff; font-size:12px;
+  }
+  .kv{display:flex; justify-content:space-between; gap:10px; font-size:12px; color:var(--muted); align-items:center;}
+  input[type="range"]{width:100%;}
+</style>
+</head>
+
+<body>
+<div id="app">
+  <div id="ui">
+    <h3>Modal Frame Definition</h3>
+
+    <div class="sectionTitle">Units / Gravity</div>
+    <div class="row">
+      <select id="units">
+        <option value="imperial" selected>Imperial (in, lbf, slug/in³)</option>
+        <option value="metric">Metric (m, N, kg/m³)</option>
+      </select>
+      <input id="gInput" type="number" step="0.0001" value="386.0886" title="gravity" />
+    </div>
+    <div class="hint small">
+      For imperial, set g=386.0886 in/s². For metric, set g=9.80665 m/s². (You can override.)
+    </div>
+
+    <div class="sectionTitle">Nodes</div>
+    <div class="hint small">
+      Columns: <b>node x y z delX delY delZ thetaXX thetaYY thetaZZ W</b><br/>
+      BC rule: blank =&gt; free DOF, nonblank (including 0) =&gt; prescribed.<br/>
+      W is nodal <b>weight</b> (force). It is converted to mass m=W/g and added to ux,uy,uz.
+    </div>
+    <textarea id="taNodes" placeholder="node  x  y  z  delX  delY  delZ  thetaXX  thetaYY  thetaZZ  W"></textarea>
+    <div class="row">
+      <button id="btnUseNodes">Use Nodes</button>
+      <button id="btnResetNodes">Reset</button>
+    </div>
+
+    <div class="sectionTitle">Segments</div>
+    <div class="hint small">
+      Columns: <b>elem ni nj E G Izz Iyy Jyz Ayz rho x3 y3 z3</b> (header optional)<br/>
+      rho is <b>mass density</b>. Ayz is treated as area A.
+    </div>
+    <textarea id="taElems" placeholder="elem  ni  nj  E  G  Izz  Iyy  Jyz  Ayz  rho  x3  y3  z3"></textarea>
+    <div class="row">
+      <button id="btnUseElems">Use Segments</button>
+      <button id="btnResetElems">Reset</button>
+    </div>
+
+    <div class="sectionTitle">Actions</div>
+    <button id="btnDraw" disabled>Draw Frame</button>
+    <button id="btnSolveModes" disabled>Solve Modes (First 3)</button>
+
+    <div class="sectionTitle">Mode Viewer</div>
+    <div class="row">
+      <select id="modeSelect" disabled>
+        <option value="0">Mode 1</option>
+        <option value="1">Mode 2</option>
+        <option value="2">Mode 3</option>
+      </select>
+      <button id="btnToggleAnim" disabled>Animate: Off</button>
+    </div>
+
+    <div class="kv" style="margin-top:8px;">
+      <div>Amplitude</div>
+      <input id="amp" type="number" step="0.1" value="10" disabled />
+    </div>
+    <div class="kv" style="margin-top:8px;">
+      <div>Speed (×)</div>
+      <input id="speed" type="number" step="0.1" value="1.0" disabled />
+    </div>
+
+    <div id="summary"></div>
+    <div id="log"></div>
+  </div>
+
+  <div id="rightColumn">
+    <div id="viewportWrap">
+      <div id="vpBar">
+        <div>3D Viewport</div>
+        <div id="status" class="small">Idle</div>
+      </div>
+      <canvas id="canvas"></canvas>
+      <div id="selInfo"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =========================
+   Defaults
+   ========================= */
+const DEFAULT_NODES_TEXT =
+`node\tx\ty\tz\tdelX\tdelY\tdelZ\tthetaXX\tthetaYY\tthetaZZ\tW
+1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0
+2\t0\t0\t96\t\t\t\t\t\t\t0
+3\t60\t0\t0\t0\t0\t0\t0\t0\t0\t0
+4\t60\t0\t96\t\t\t\t\t\t\t0
+5\t0\t72\t0\t0\t0\t0\t\t\t\t0
+6\t0\t72\t96\t\t\t\t\t\t\t500
+7\t60\t72\t0\t0\t0\t0\t\t\t\t0
+8\t60\t72\t96\t\t\t\t\t\t\t0`;
+
+const DEFAULT_ELEMS_TEXT =
+`elem\tni\tnj\tE\tG\tIzz\tIyy\tJyz\tAyz\trho\tx3\ty3\tz3
+1\t1\t2\t12000000\t4610000\t10.7\t2.67\t7.3\t8\t0.03\t60\t0\t0
+2\t3\t4\t12000000\t4610000\t10.7\t2.67\t7.3\t8\t0.03\t0\t0\t0
+3\t5\t6\t12000000\t4610000\t10.7\t2.67\t7.3\t8\t0.03\t60\t72\t0
+4\t7\t8\t12000000\t4610000\t10.7\t2.67\t7.3\t8\t0.03\t0\t72\t0
+5\t4\t8\t12000000\t4610000\t10.7\t2.67\t7.3\t8\t0.03\t1\t1\t96
+6\t2\t4\t12000000\t4610000\t10.7\t2.67\t7.3\t8\t0.03\t1\t1\t96
+7\t2\t6\t12000000\t4610000\t10.7\t2.67\t7.3\t8\t0.03\t1\t1\t96
+8\t6\t8\t12000000\t4610000\t10.7\t2.67\t7.3\t8\t0.03\t1\t1\t96`;
+
+/* =========================
+   Model
+   ========================= */
+const Model = {
+  nodes: [],
+  elems: [],
+  nodeById: new Map(),
+  elemById: new Map(),
+  isDrawn: false,
+  lastModes: null // {freqHz:[...], modes:[Float64Array ndof], meta:{...}}
+};
+
+const View = {
+  cam: {
+    distance: 50,
+    azimuth: 35 * Math.PI / 180,
+    elevation: 30 * Math.PI / 180,
+    centerX: 6,
+    centerY: 5,
+    centerZ: 6
+  },
+  isInteractive: false,
+  dragging: false,
+  dragButton: 0,
+  dragStart: {x:0, y:0, azimuth:0, elevation:0, centerX:0, centerY:0, centerZ:0},
+  hoveredNode: null,
+  pinnedNode: null,
+  hoveredElem: null,
+  pinnedElem: null,
+  mousePos: {x:0, y:0},
+};
+
+/* =========================
+   DOM
+   ========================= */
+const el = {
+  units: document.getElementById('units'),
+  gInput: document.getElementById('gInput'),
+
+  taNodes: document.getElementById('taNodes'),
+  taElems: document.getElementById('taElems'),
+  btnUseNodes: document.getElementById('btnUseNodes'),
+  btnUseElems: document.getElementById('btnUseElems'),
+  btnResetNodes: document.getElementById('btnResetNodes'),
+  btnResetElems: document.getElementById('btnResetElems'),
+
+  btnDraw: document.getElementById('btnDraw'),
+  btnSolveModes: document.getElementById('btnSolveModes'),
+
+  modeSelect: document.getElementById('modeSelect'),
+  btnToggleAnim: document.getElementById('btnToggleAnim'),
+  amp: document.getElementById('amp'),
+  speed: document.getElementById('speed'),
+
+  summary: document.getElementById('summary'),
+  log: document.getElementById('log'),
+  status: document.getElementById('status'),
+  canvas: document.getElementById('canvas'),
+  selInfo: document.getElementById('selInfo'),
+};
+const ctx = el.canvas.getContext('2d');
+
+/* =========================
+   Gravity
+   ========================= */
+function getGravity(){
+  const g = Number(el.gInput.value);
+  return Number.isFinite(g) && g>0 ? g : 1;
+}
+el.units.addEventListener('change', ()=>{
+  if(el.units.value === "metric") el.gInput.value = 9.80665;
+  else el.gInput.value = 386.0886;
+});
+
+/* =========================
+   Canvas sizing
+   ========================= */
+function resizeCanvas(){
+  const rect = el.canvas.getBoundingClientRect();
+  el.canvas.width = rect.width;
+  el.canvas.height = rect.height;
+  if(Model.isDrawn) drawPrimary();
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+/* =========================
+   Logging
+   ========================= */
+function logClear(){ el.log.textContent = ""; }
+function logLine(msg, cls=null){
+  const d = document.createElement('div');
+  d.textContent = msg;
+  if(cls) d.className = cls;
+  el.log.appendChild(d);
+  el.log.scrollTop = el.log.scrollHeight;
+}
+function setStatus(msg){ el.status.textContent = msg; }
+function badge(text){
+  const b = document.createElement('span');
+  b.className = 'badge';
+  b.textContent = text;
+  return b;
+}
+function renderSummary(){
+  el.summary.innerHTML = "";
+  el.summary.appendChild(badge(`Nodes: ${Model.nodes.length}`));
+  el.summary.appendChild(badge(`Segments: ${Model.elems.length}`));
+  const prescribed = Model.nodes.reduce((acc,nd)=>acc +
+    (nd.ux.prescribed?1:0)+(nd.uy.prescribed?1:0)+(nd.uz.prescribed?1:0)+
+    (nd.rx.prescribed?1:0)+(nd.ry.prescribed?1:0)+(nd.rz.prescribed?1:0), 0);
+  el.summary.appendChild(badge(`Prescribed DOF: ${prescribed}`));
+  const lumpW = Model.nodes.reduce((a,n)=>a+(n.W||0),0);
+  el.summary.appendChild(badge(`Total W: ${lumpW}`));
+  if(Model.lastModes){
+    el.summary.appendChild(badge(`Solved modes: ${Model.lastModes.freqHz.length}`));
+  }
+}
+
+/* =========================
+   Parsing utilities
+   ========================= */
+function isBlankToken(t){
+  if(t==null) return true;
+  const s = String(t).trim();
+  return s === "" || s === "." || /^na$/i.test(s);
+}
+function toNumberOrNull(t){
+  if(isBlankToken(t)) return null;
+  const v = Number(String(t).trim());
+  return Number.isFinite(v) ? v : NaN;
+}
+function toNumberOrZero(t){
+  if(isBlankToken(t)) return 0;
+  const v = Number(String(t).trim());
+  return Number.isFinite(v) ? v : NaN;
+}
+function splitLine(line){
+  if(line.includes("\t")) return line.split("\t");
+  if(line.includes(","))  return line.split(",");
+  return line.trim().split(/\s+/);
+}
+function isCommentOrBlank(line){
+  const s = line.trim();
+  return s === "" || s.startsWith("#") || s.startsWith("//");
+}
+function detectHeader(tokens){
+  return tokens.some(t => /[A-Za-z]/.test(String(t)));
+}
+function normalizeHeader(h){
+  return String(h).trim().toLowerCase()
+    .replace(/\s+/g,'')
+    .replace(/_/g,'')
+    .replace(/-/g,'');
+}
+
+/* =========================
+   Parse nodes: node x y z delX delY delZ thetaXX thetaYY thetaZZ W
+   ========================= */
+function parseNodes(text){
+  const lines = text.split(/\r?\n/);
+  const rows = [];
+  for(const line of lines){
+    if(isCommentOrBlank(line)) continue;
+    const toks = splitLine(line).map(s=>String(s).trim());
+    if(toks.length) rows.push(toks);
+  }
+  if(rows.length === 0) throw new Error("No node data rows found.");
+
+  let headerMap = null, startIdx = 0;
+  if(detectHeader(rows[0])){
+    headerMap = new Map();
+    rows[0].forEach((h,i)=>headerMap.set(normalizeHeader(h), i));
+    startIdx = 1;
+  }
+  const get = (toks, name, idxFallback) => {
+    if(headerMap){
+      const i = headerMap.get(normalizeHeader(name));
+      return (i==null) ? null : toks[i];
+    }
+    return toks[idxFallback];
+  };
+
+  const nodes = [];
+  const seen = new Set();
+  for(let r=startIdx; r<rows.length; r++){
+    const toks = rows[r];
+    const nodeTok = get(toks,"node",0) ?? get(toks,"nodeno",0) ?? toks[0];
+    const id = parseInt(String(nodeTok).trim(), 10);
+    if(!Number.isFinite(id)) throw new Error(`Row ${r+1}: invalid node number "${nodeTok}"`);
+    if(seen.has(id)) throw new Error(`Row ${r+1}: duplicate node number ${id}`);
+    seen.add(id);
+
+    const x = toNumberOrNull(get(toks,"x",1));
+    const y = toNumberOrNull(get(toks,"y",2));
+    const z = toNumberOrNull(get(toks,"z",3));
+    if(!Number.isFinite(x)) throw new Error(`Row ${r+1}: invalid X`);
+    if(!Number.isFinite(y)) throw new Error(`Row ${r+1}: invalid Y`);
+    if(!Number.isFinite(z)) throw new Error(`Row ${r+1}: invalid Z`);
+
+    const dx = toNumberOrNull(get(toks,"delx",4) ?? get(toks,"dx",4));
+    const dy = toNumberOrNull(get(toks,"dely",5) ?? get(toks,"dy",5));
+    const dz = toNumberOrNull(get(toks,"delz",6) ?? get(toks,"dz",6));
+
+    const thx = toNumberOrNull(get(toks,"thetaxx",7) ?? get(toks,"thxx",7) ?? get(toks,"rx",7));
+    const thy = toNumberOrNull(get(toks,"thetayy",8) ?? get(toks,"thyy",8) ?? get(toks,"ry",8));
+    const thz = toNumberOrNull(get(toks,"thetazz",9) ?? get(toks,"thzz",9) ?? get(toks,"rz",9));
+
+    const W = toNumberOrZero(get(toks,"w",10) ?? get(toks,"weight",10));
+
+    if(!Number.isFinite(W) || W<0) throw new Error(`Row ${r+1}: invalid W (must be >=0)`);
+    if(dx!==null && !Number.isFinite(dx)) throw new Error(`Row ${r+1}: invalid delX`);
+    if(dy!==null && !Number.isFinite(dy)) throw new Error(`Row ${r+1}: invalid delY`);
+    if(dz!==null && !Number.isFinite(dz)) throw new Error(`Row ${r+1}: invalid delZ`);
+    if(thx!==null && !Number.isFinite(thx)) throw new Error(`Row ${r+1}: invalid thetaXX`);
+    if(thy!==null && !Number.isFinite(thy)) throw new Error(`Row ${r+1}: invalid thetaYY`);
+    if(thz!==null && !Number.isFinite(thz)) throw new Error(`Row ${r+1}: invalid thetaZZ`);
+
+    nodes.push({
+      id, x, y, z,
+      ux: { prescribed: dx!==null, value: dx ?? 0 },
+      uy: { prescribed: dy!==null, value: dy ?? 0 },
+      uz: { prescribed: dz!==null, value: dz ?? 0 },
+      rx: { prescribed: thx!==null, value: thx ?? 0 },
+      ry: { prescribed: thy!==null, value: thy ?? 0 },
+      rz: { prescribed: thz!==null, value: thz ?? 0 },
+      W
+    });
+  }
+  return nodes;
+}
+
+/* =========================
+   Parse elems: elem ni nj E G Izz Iyy Jyz Ayz rho x3 y3 z3
+   ========================= */
+function parseElems(text){
+  const lines = text.split(/\r?\n/);
+  const rows = [];
+  for(const line of lines){
+    if(isCommentOrBlank(line)) continue;
+    const toks = splitLine(line).map(s=>String(s).trim());
+    if(toks.length) rows.push(toks);
+  }
+  if(rows.length === 0) throw new Error("No segment data rows found.");
+
+  let headerMap = null, startIdx = 0;
+  if(detectHeader(rows[0])){
+    headerMap = new Map();
+    rows[0].forEach((h,i)=>headerMap.set(normalizeHeader(h), i));
+    startIdx = 1;
+  }
+  const get = (toks, name, idxFallback) => {
+    if(headerMap){
+      const i = headerMap.get(normalizeHeader(name));
+      return (i==null) ? null : toks[i];
+    }
+    return toks[idxFallback];
+  };
+
+  const elems = [];
+  for(let r=startIdx; r<rows.length; r++){
+    const toks = rows[r];
+
+    const elemTok = get(toks,"elem",0) ?? get(toks,"element",0) ?? toks[0];
+    const niTok = get(toks,"ni",1) ?? get(toks,"nodei",1) ?? toks[1];
+    const njTok = get(toks,"nj",2) ?? get(toks,"nodej",2) ?? toks[2];
+
+    const id = parseInt(String(elemTok).trim(), 10);
+    const ni = parseInt(String(niTok).trim(),10);
+    const nj = parseInt(String(njTok).trim(),10);
+
+    if(!Number.isFinite(id)) throw new Error(`Row ${r+1}: invalid element number`);
+    if(!Number.isFinite(ni) || !Number.isFinite(nj)) throw new Error(`Row ${r+1}: invalid node i/j`);
+    if(ni === nj) throw new Error(`Row ${r+1}: ni and nj cannot be the same (${ni})`);
+
+    const E   = toNumberOrNull(get(toks,"e",3));
+    const G   = toNumberOrNull(get(toks,"g",4));
+    const Izz = toNumberOrNull(get(toks,"izz",5));
+    const Iyy = toNumberOrNull(get(toks,"iyy",6));
+    const Jyz = toNumberOrNull(get(toks,"jyz",7) ?? get(toks,"j",7));
+    const Ayz = toNumberOrNull(get(toks,"ayz",8) ?? get(toks,"a",8));
+    const rho = toNumberOrZero(get(toks,"rho",9));
+    const x3  = toNumberOrNull(get(toks,"x3",10));
+    const y3  = toNumberOrNull(get(toks,"y3",11));
+    const z3  = toNumberOrNull(get(toks,"z3",12));
+
+    if(!Number.isFinite(E) || E<=0) throw new Error(`Row ${r+1}: invalid E (>0)`);
+    if(!Number.isFinite(G) || G<=0) throw new Error(`Row ${r+1}: invalid G (>0)`);
+    if(!Number.isFinite(Izz) || Izz<=0) throw new Error(`Row ${r+1}: invalid Izz (>0)`);
+    if(!Number.isFinite(Iyy) || Iyy<=0) throw new Error(`Row ${r+1}: invalid Iyy (>0)`);
+    if(!Number.isFinite(Jyz) || Jyz<=0) throw new Error(`Row ${r+1}: invalid Jyz (>0)`);
+    if(!Number.isFinite(Ayz) || Ayz<=0) throw new Error(`Row ${r+1}: invalid Ayz (>0)`);
+    if(!Number.isFinite(rho) || rho<0)  throw new Error(`Row ${r+1}: invalid rho (>=0)`);
+    if(!Number.isFinite(x3)) throw new Error(`Row ${r+1}: invalid x3`);
+    if(!Number.isFinite(y3)) throw new Error(`Row ${r+1}: invalid y3`);
+    if(!Number.isFinite(z3)) throw new Error(`Row ${r+1}: invalid z3`);
+
+    elems.push({ id, ni, nj, E, G, Izz, Iyy, Jyz, Ayz, rho, x3, y3, z3 });
+  }
+  return elems;
+}
+
+/* =========================
+   Install / validate
+   ========================= */
+function installNodes(nodes){
+  Model.nodes = nodes;
+  Model.nodeById = new Map(nodes.map(n=>[n.id,n]));
+  Model.isDrawn = false;
+  Model.lastModes = null;
+  View.hoveredNode = View.pinnedNode = null;
+  View.hoveredElem = View.pinnedElem = null;
+  renderSummary();
+}
+function installElems(elems){
+  Model.elems = elems;
+  Model.elemById = new Map(elems.map(e=>[e.id,e]));
+  Model.isDrawn = false;
+  Model.lastModes = null;
+  View.hoveredNode = View.pinnedNode = null;
+  View.hoveredElem = View.pinnedElem = null;
+  renderSummary();
+}
+function crossValidate(){
+  let ok = true;
+  for(const e of Model.elems){
+    if(!Model.nodeById.has(e.ni)){ logLine(`ERROR: Segment ${e.id} references missing node ${e.ni}`, "log-err"); ok=false; }
+    if(!Model.nodeById.has(e.nj)){ logLine(`ERROR: Segment ${e.id} references missing node ${e.nj}`, "log-err"); ok=false; }
+  }
+  return ok;
+}
+function updateButtons(){
+  const haveData = (Model.nodes.length>0 && Model.elems.length>0);
+  el.btnDraw.disabled = !haveData;
+  el.btnSolveModes.disabled = !haveData;
+}
+
+/* =========================
+   3D Camera & Projection
+   ========================= */
+function project3D(x, y, z){
+  const cam = View.cam;
+  const camX = cam.centerX + cam.distance * Math.cos(cam.elevation) * Math.cos(cam.azimuth);
+  const camY = cam.centerY + cam.distance * Math.cos(cam.elevation) * Math.sin(cam.azimuth);
+  const camZ = cam.centerZ + cam.distance * Math.sin(cam.elevation);
+
+  const dx = x - camX, dy = y - camY, dz = z - camZ;
+
+  const toCenter = { x: cam.centerX - camX, y: cam.centerY - camY, z: cam.centerZ - camZ };
+  const dist = Math.hypot(toCenter.x,toCenter.y,toCenter.z);
+  const forward = { x: toCenter.x/dist, y: toCenter.y/dist, z: toCenter.z/dist };
+
+  const worldUp = {x:0,y:0,z:1};
+  const right = {
+    x: forward.y*worldUp.z - forward.z*worldUp.y,
+    y: forward.z*worldUp.x - forward.x*worldUp.z,
+    z: forward.x*worldUp.y - forward.y*worldUp.x
+  };
+  const rL = Math.hypot(right.x,right.y,right.z);
+  right.x/=rL; right.y/=rL; right.z/=rL;
+
+  const up = {
+    x: right.y*forward.z - right.z*forward.y,
+    y: right.z*forward.x - right.x*forward.z,
+    z: right.x*forward.y - right.y*forward.x
+  };
+
+  const screenX = dx*right.x + dy*right.y + dz*right.z;
+  const screenY = dx*up.x + dy*up.y + dz*up.z;
+
+  const scale = 600 / cam.distance;
+  const cx = el.canvas.width/2, cy = el.canvas.height/2;
+
+  return { x: cx + screenX*scale, y: cy - screenY*scale };
+}
+function fitView3D(nodes){
+  if(!nodes || nodes.length===0) return;
+  let minX=Infinity, minY=Infinity, minZ=Infinity;
+  let maxX=-Infinity, maxY=-Infinity, maxZ=-Infinity;
+  for(const n of nodes){
+    minX=Math.min(minX,n.x); maxX=Math.max(maxX,n.x);
+    minY=Math.min(minY,n.y); maxY=Math.max(maxY,n.y);
+    minZ=Math.min(minZ,n.z); maxZ=Math.max(maxZ,n.z);
+  }
+  const cx=(minX+maxX)/2, cy=(minY+maxY)/2, cz=(minZ+maxZ)/2;
+  const span = Math.max(maxX-minX, maxY-minY, maxZ-minZ, 50);
+  View.cam.centerX=cx; View.cam.centerY=cy; View.cam.centerZ=cz;
+  View.cam.distance = span*2.5;
+}
+
+/* =========================
+   Drawing
+   ========================= */
+function clearCanvas(){
+  ctx.clearRect(0,0,el.canvas.width,el.canvas.height);
+  ctx.fillStyle="#fff";
+  ctx.fillRect(0,0,el.canvas.width,el.canvas.height);
+}
+function drawGrid3D(){
+  const gridSize=200, gridStep=20;
+  ctx.save();
+  ctx.strokeStyle="rgba(0,0,0,0.08)";
+  ctx.lineWidth=0.5;
+
+  for(let x=-gridSize; x<=gridSize; x+=gridStep){
+    const p1=project3D(x,-gridSize,0), p2=project3D(x,gridSize,0);
+    ctx.beginPath(); ctx.moveTo(p1.x,p1.y); ctx.lineTo(p2.x,p2.y); ctx.stroke();
+  }
+  for(let y=-gridSize; y<=gridSize; y+=gridStep){
+    const p1=project3D(-gridSize,y,0), p2=project3D(gridSize,y,0);
+    ctx.beginPath(); ctx.moveTo(p1.x,p1.y); ctx.lineTo(p2.x,p2.y); ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawBCSymbol(n){
+  const hasTransBC = n.ux.prescribed || n.uy.prescribed || n.uz.prescribed;
+  const hasRotBC   = n.rx.prescribed || n.ry.prescribed || n.rz.prescribed;
+  if(!hasTransBC && !hasRotBC) return;
+  const p=project3D(n.x,n.y,n.z);
+  ctx.save();
+  if(hasTransBC){
+    const size=10;
+    ctx.fillStyle="rgba(59,130,246,0.7)";
+    ctx.strokeStyle="rgba(37,99,235,0.9)";
+    ctx.lineWidth=1.5;
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y - size);
+    ctx.lineTo(p.x - size*0.866, p.y + size*0.5);
+    ctx.lineTo(p.x + size*0.866, p.y + size*0.5);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  if(hasRotBC){
+    const size=6;
+    ctx.fillStyle="rgba(168,85,247,0.7)";
+    ctx.strokeStyle="rgba(147,51,234,0.9)";
+    ctx.lineWidth=1.5;
+    ctx.beginPath();
+    ctx.rect(p.x - size/2, p.y - size/2, size, size);
+    ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawPrimary(modeOverlay=null){
+  clearCanvas();
+  drawGrid3D();
+
+  // elements (undeformed)
+  ctx.save();
+  for(const e of Model.elems){
+    const ni=Model.nodeById.get(e.ni), nj=Model.nodeById.get(e.nj);
+    if(!ni||!nj) continue;
+    const a=project3D(ni.x,ni.y,ni.z), b=project3D(nj.x,nj.y,nj.z);
+
+    const isHovered=(View.hoveredElem===e.id);
+    const isPinned=(View.pinnedElem===e.id);
+
+    if(isPinned){ ctx.strokeStyle="rgba(251,191,36,0.95)"; ctx.lineWidth=4.0; }
+    else if(isHovered){ ctx.strokeStyle="rgba(59,130,246,0.9)"; ctx.lineWidth=3.5; }
+    else { ctx.strokeStyle="rgba(0,0,0,0.55)"; ctx.lineWidth=2.0; }
+
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  }
+  ctx.restore();
+
+  // BCs
+  for(const n of Model.nodes) drawBCSymbol(n);
+
+  // nodes
+  for(const n of Model.nodes){
+    const p=project3D(n.x,n.y,n.z);
+    ctx.save();
+    const isHovered=(View.hoveredNode===n.id);
+    const isPinned=(View.pinnedNode===n.id);
+    const radius=(isHovered||isPinned)?6:4.2;
+    ctx.beginPath(); ctx.arc(p.x,p.y,radius,0,Math.PI*2);
+    ctx.fillStyle = isPinned ? "rgba(251,191,36,0.9)" :
+                   isHovered? "rgba(59,130,246,0.9)" :
+                              "rgba(37,99,235,0.65)";
+    ctx.fill();
+    if(isHovered||isPinned){ ctx.strokeStyle="rgba(255,255,255,0.9)"; ctx.lineWidth=2; ctx.stroke(); }
+    ctx.restore();
+  }
+
+  // overlay selected mode shape (deformed polyline)
+  if(modeOverlay){
+    const {U, scale} = modeOverlay; // U is full ndof in primary node order
+    ctx.save();
+    ctx.strokeStyle="rgba(220,38,38,0.85)";
+    ctx.lineWidth=2.2;
+    for(const e of Model.elems){
+      const ni=Model.nodeById.get(e.ni), nj=Model.nodeById.get(e.nj);
+      if(!ni||!nj) continue;
+      const iIdx = Model.nodeIndexById.get(ni.id);
+      const jIdx = Model.nodeIndexById.get(nj.id);
+
+      const ux1=U[6*iIdx+0], uy1=U[6*iIdx+1], uz1=U[6*iIdx+2];
+      const ux2=U[6*jIdx+0], uy2=U[6*jIdx+1], uz2=U[6*jIdx+2];
+
+      const p1=project3D(ni.x+scale*ux1, ni.y+scale*uy1, ni.z+scale*uz1);
+      const p2=project3D(nj.x+scale*ux2, nj.y+scale*uy2, nj.z+scale*uz2);
+      ctx.beginPath(); ctx.moveTo(p1.x,p1.y); ctx.lineTo(p2.x,p2.y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+/* =========================
+   Math helpers
+   ========================= */
+function build3DTransformationMatrix(ni, nj, x3, y3, z3){
+  const dx = nj.x - ni.x, dy = nj.y - ni.y, dz = nj.z - ni.z;
+  const L = Math.hypot(dx,dy,dz);
+  if(L < 1e-12) throw new Error("Zero-length element");
+
+  const xx = dx/L, xy = dy/L, xz = dz/L;
+
+  const vx = x3 - ni.x, vy = y3 - ni.y, vz = z3 - ni.z;
+  const dot = vx*xx + vy*xy + vz*xz;
+
+  const vzx = vx - dot*xx, vzy = vy - dot*xy, vzz = vz - dot*xz;
+  const vzLen = Math.hypot(vzx,vzy,vzz);
+  if(vzLen < 1e-12) throw new Error("Orientation point collinear with element axis");
+
+  const zx = vzx/vzLen, zy = vzy/vzLen, zz = vzz/vzLen;
+
+  const yx = zy*xz - zz*xy;
+  const yy = zz*xx - zx*xz;
+  const yz = zx*xy - zy*xx;
+
+  const R = [
+    [xx, xy, xz],
+    [yx, yy, yz],
+    [zx, zy, zz]
+  ];
+
+  const T = Array.from({length:12}, ()=> new Float64Array(12));
+  for(let block=0; block<4; block++){
+    const off=block*3;
+    for(let i=0;i<3;i++){
+      for(let j=0;j<3;j++){
+        T[off+i][off+j] = R[i][j];
+      }
+    }
+  }
+  return T; // uL = T*uG
+}
+
+/* =========================
+   12x12 Local Stiffness (space frame)
+   (same structure as your current 3D stiffness)
+   ========================= */
+function elementLocalStiffness3D(E, G, A, Izz, Iyy, J, L){
+  const EA_L = (E*A)/L;
+  const GJ_L = (G*J)/L;
+
+  const EIyy = E*Iyy, EIzz = E*Izz;
+
+  const EIyy_L3 = EIyy/(L*L*L), EIyy_L2 = EIyy/(L*L), EIyy_L = EIyy/L;
+  const EIzz_L3 = EIzz/(L*L*L), EIzz_L2 = EIzz/(L*L), EIzz_L = EIzz/L;
+
+  const k = Array.from({length:12}, ()=> new Float64Array(12));
+
+  // axial
+  k[0][0]=EA_L; k[0][6]=-EA_L;
+  k[6][0]=-EA_L; k[6][6]=EA_L;
+
+  // torsion (about local x) -> rx DOFs (3,9)
+  k[3][3]=GJ_L; k[3][9]=-GJ_L;
+  k[9][3]=-GJ_L; k[9][9]=GJ_L;
+
+  // bending in x-y plane: y disp (1,7) with z-rotation (5,11) using EIzz
+  k[1][1] = 12*EIzz_L3;   k[1][5] = 6*EIzz_L2;    k[1][7] = -12*EIzz_L3;  k[1][11]= 6*EIzz_L2;
+  k[5][1] = 6*EIzz_L2;    k[5][5] = 4*EIzz_L;     k[5][7] = -6*EIzz_L2;   k[5][11]= 2*EIzz_L;
+  k[7][1] = -12*EIzz_L3;  k[7][5] = -6*EIzz_L2;   k[7][7] = 12*EIzz_L3;   k[7][11]= -6*EIzz_L2;
+  k[11][1]= 6*EIzz_L2;    k[11][5]= 2*EIzz_L;     k[11][7]= -6*EIzz_L2;   k[11][11]= 4*EIzz_L;
+
+  // bending in x-z plane: z disp (2,8) with y-rotation (4,10) using EIyy
+  k[2][2] = 12*EIyy_L3;   k[2][4] = -6*EIyy_L2;   k[2][8] = -12*EIyy_L3;  k[2][10]= -6*EIyy_L2;
+  k[4][2] = -6*EIyy_L2;   k[4][4] = 4*EIyy_L;     k[4][8] = 6*EIyy_L2;    k[4][10]= 2*EIyy_L;
+  k[8][2] = -12*EIyy_L3;  k[8][4] = 6*EIyy_L2;    k[8][8] = 12*EIyy_L3;   k[8][10]= 6*EIyy_L2;
+  k[10][2]= -6*EIyy_L2;   k[10][4]= 2*EIyy_L;     k[10][8]= 6*EIyy_L2;    k[10][10]= 4*EIyy_L;
+
+  return k;
+}
+
+/* =========================
+   12x12 Consistent Mass (Euler–Bernoulli space frame)
+   DOF order: [ux uy uz rx ry rz, ux2 uy2 uz2 rx2 ry2 rz2]
+   Using standard axial + torsion + bending (y,z planes) consistent mass.
+   rho is mass density, A is area.
+   For torsional rotational inertia we use rho*J as polar mass moment per length.
+   For bending, standard 4x4 consistent mass for each plane.
+   ========================= */
+function elementLocalMass3D(rho, A, Izz, Iyy, J, L){
+  const m = rho*A*L; // total mass
+
+  const M = Array.from({length:12}, ()=> new Float64Array(12));
+
+  // --- Axial (ux) consistent mass: (m/6) [2 1; 1 2]
+  const ma = m/6;
+  M[0][0] += 2*ma; M[0][6] += 1*ma;
+  M[6][0] += 1*ma; M[6][6] += 2*ma;
+
+  // --- Torsion (rx): use polar mass moment per length: rho*J, consistent like axial
+  // Total torsional "mass" = rho*J*L
+  const mt = (rho*J*L)/6;
+  M[3][3] += 2*mt; M[3][9] += 1*mt;
+  M[9][3] += 1*mt; M[9][9] += 2*mt;
+
+  // --- Bending in local y (uy with rz), uses EIzz stiffness plane -> uses transverse mass m
+  // Standard 4x4 EB beam consistent mass matrix for DOFs [v1, th1, v2, th2]:
+  // (m/420) * [[156, 22L, 54, -13L],
+  //            [22L, 4L^2, 13L, -3L^2],
+  //            [54, 13L, 156, -22L],
+  //            [-13L, -3L^2, -22L, 4L^2]]
+  const c = m/420;
+  const L2 = L*L;
+
+  // Map: v=uy => DOF 1, th=rz => DOF 5, v2=uy2 => DOF 7, th2=rz2 => DOF 11
+  const mapY = [1,5,7,11];
+  const My = [
+    [156, 22*L, 54,  -13*L],
+    [22*L, 4*L2, 13*L, -3*L2],
+    [54,  13*L, 156, -22*L],
+    [-13*L, -3*L2, -22*L, 4*L2]
+  ];
+  for(let i=0;i<4;i++){
+    for(let j=0;j<4;j++){
+      M[mapY[i]][mapY[j]] += c*My[i][j];
+    }
+  }
+
+  // --- Bending in local z (uz with ry)
+  // Map: v=uz => DOF 2, th=ry => DOF 4, v2=uz2 => DOF 8, th2=ry2 => DOF 10
+  const mapZ = [2,4,8,10];
+  const Mz = [
+    [156, -22*L, 54,   13*L],
+    [-22*L, 4*L2, -13*L, -3*L2],
+    [54,  -13*L, 156,  22*L],
+    [13*L, -3*L2, 22*L, 4*L2]
+  ];
+  for(let i=0;i<4;i++){
+    for(let j=0;j<4;j++){
+      M[mapZ[i]][mapZ[j]] += c*Mz[i][j];
+    }
+  }
+
+  // NOTE: This matrix already includes the rotational inertia coupling terms via bending consistent mass.
+  // If you ever want to include additional "spin" inertia about y/z, you'd add rho*Iyy/zz terms similarly.
+
+  return M;
+}
+
+/* =========================
+   BC condensation
+   ========================= */
+function buildBcByDof(){
+  // Primary nodes in sorted id order -> dof order matches that
+  const nodesSorted = [...Model.nodes].slice().sort((a,b)=>a.id-b.id);
+  Model.nodeIndexById = new Map(nodesSorted.map((n,i)=>[n.id,i]));
+
+  const ndof = 6*nodesSorted.length;
+  const bcByDof = Array(ndof).fill(null);
+
+  for(let i=0;i<nodesSorted.length;i++){
+    const n = nodesSorted[i];
+    const base = 6*i;
+    if(n.ux.prescribed) bcByDof[base+0]=n.ux.value;
+    if(n.uy.prescribed) bcByDof[base+1]=n.uy.value;
+    if(n.uz.prescribed) bcByDof[base+2]=n.uz.value;
+    if(n.rx.prescribed) bcByDof[base+3]=n.rx.value;
+    if(n.ry.prescribed) bcByDof[base+4]=n.ry.value;
+    if(n.rz.prescribed) bcByDof[base+5]=n.rz.value;
+  }
+  return {bcByDof, nodesSorted};
+}
+
+/* =========================
+   Assemble [K] and [M]
+   ========================= */
+function assembleKM(){
+  const {bcByDof, nodesSorted} = buildBcByDof();
+  const N = nodesSorted.length;
+  const ndof = 6*N;
+
+  const K = Array.from({length:ndof}, ()=> new Float64Array(ndof));
+  const M = Array.from({length:ndof}, ()=> new Float64Array(ndof));
+
+  // Element assembly
+  for(const e of Model.elems){
+    const ni = Model.nodeById.get(e.ni);
+    const nj = Model.nodeById.get(e.nj);
+    if(!ni||!nj) continue;
+
+    const iIdx = Model.nodeIndexById.get(ni.id);
+    const jIdx = Model.nodeIndexById.get(nj.id);
+
+    const dx=nj.x-ni.x, dy=nj.y-ni.y, dz=nj.z-ni.z;
+    const L = Math.hypot(dx,dy,dz);
+    if(!(L>0)) throw new Error(`Zero-length element ${e.id}`);
+
+    const dofs = [
+      6*iIdx+0, 6*iIdx+1, 6*iIdx+2, 6*iIdx+3, 6*iIdx+4, 6*iIdx+5,
+      6*jIdx+0, 6*jIdx+1, 6*jIdx+2, 6*jIdx+3, 6*jIdx+4, 6*jIdx+5
+    ];
+
+    const kL = elementLocalStiffness3D(e.E, e.G, e.Ayz, e.Izz, e.Iyy, e.Jyz, L);
+    const mL = elementLocalMass3D(e.rho||0, e.Ayz, e.Izz, e.Iyy, e.Jyz, L);
+
+    const T = build3DTransformationMatrix(ni, nj, e.x3, e.y3, e.z3);
+
+    // kg = T^T kL T
+    const tmpK = Array.from({length:12}, ()=> new Float64Array(12));
+    const tmpM = Array.from({length:12}, ()=> new Float64Array(12));
+
+    for(let i=0;i<12;i++){
+      for(let j=0;j<12;j++){
+        let sK=0, sM=0;
+        for(let m=0;m<12;m++){
+          sK += kL[i][m]*T[m][j];
+          sM += mL[i][m]*T[m][j];
+        }
+        tmpK[i][j]=sK;
+        tmpM[i][j]=sM;
+      }
+    }
+
+    const kG = Array.from({length:12}, ()=> new Float64Array(12));
+    const mG = Array.from({length:12}, ()=> new Float64Array(12));
+
+    for(let i=0;i<12;i++){
+      for(let j=0;j<12;j++){
+        let sK=0, sM=0;
+        for(let m=0;m<12;m++){
+          sK += T[m][i]*tmpK[m][j];
+          sM += T[m][i]*tmpM[m][j];
+        }
+        kG[i][j]=sK;
+        mG[i][j]=sM;
+      }
+    }
+
+    // assemble
+    for(let a=0;a<12;a++){
+      const I = dofs[a];
+      const Kr = K[I];
+      const Mr = M[I];
+      for(let b=0;b<12;b++){
+        const J = dofs[b];
+        Kr[J] += kG[a][b];
+        Mr[J] += mG[a][b];
+      }
+    }
+  }
+
+  // Add nodal lumped masses from W/g to translational DOFs
+  const g = getGravity();
+  for(let i=0;i<N;i++){
+    const n = nodesSorted[i];
+    const m = (n.W||0)/g;
+    if(m>0){
+      M[6*i+0][6*i+0] += m;
+      M[6*i+1][6*i+1] += m;
+      M[6*i+2][6*i+2] += m;
+    }
+  }
+
+  return {K, M, bcByDof, nodesSorted, ndof};
+}
+
+/* =========================
+   Extract free DOFs and solve generalized eigenproblem
+   ========================= */
+function solveFirst3Modes(){
+  const {K, M, bcByDof, ndof} = assembleKM();
+
+  const free = [];
+  for(let i=0;i<ndof;i++){
+    const v = bcByDof[i];
+    if(v === null || v === undefined) free.push(i);
+  }
+  if(free.length===0) throw new Error("All DOFs prescribed; no modal DOFs.");
+
+  // Build dense Kff and Mff as JS arrays (numeric.js expects arrays-of-arrays)
+  const Kff = Array.from({length:free.length}, ()=> Array(free.length).fill(0));
+  const Mff = Array.from({length:free.length}, ()=> Array(free.length).fill(0));
+
+  for(let a=0;a<free.length;a++){
+    const I = free[a];
+    for(let b=0;b<free.length;b++){
+      const J = free[b];
+      Kff[a][b] = K[I][J];
+      Mff[a][b] = M[I][J];
+    }
+  }
+
+  // Solve generalized eigen via A = inv(Mff) * Kff
+  // (For symmetric positive definite Mff, this is OK for small/medium problems.)
+  const Minv = numeric.inv(Mff);
+  const A = numeric.dot(Minv, Kff);
+
+  const eig = numeric.eig(A); // returns {lambda:{x:[]}, E:{x:[[]]}} for real
+  const lam = eig.lambda.x;
+  const V = eig.E.x; // columns are eigenvectors in numeric.js
+
+  // Collect positive real lambdas
+  const modes = [];
+  for(let i=0;i<lam.length;i++){
+    const li = lam[i];
+    if(!Number.isFinite(li) || li<=1e-10) continue;
+    modes.push({lambda: li, vec: V.map(row => row[i])}); // vec length = nFree
+  }
+  if(modes.length===0) throw new Error("No positive eigenvalues found (check constraints/mass).");
+
+  // Sort ascending
+  modes.sort((a,b)=>a.lambda-b.lambda);
+
+  // Take first 3
+  const take = modes.slice(0,3);
+
+  // Build full ndof mode vectors (including fixed DOFs as 0)
+  const fullModes = [];
+  const freqHz = [];
+  for(const m of take){
+    const omega = Math.sqrt(m.lambda);
+    const f = omega/(2*Math.PI);
+    freqHz.push(f);
+
+    const U = new Float64Array(ndof);
+    for(let k=0;k<free.length;k++){
+      U[free[k]] = m.vec[k];
+    }
+
+    // Normalize: max translational magnitude among nodes = 1
+    let maxT = 0;
+    for(let i=0;i<ndof/6;i++){
+      const ux=U[6*i+0], uy=U[6*i+1], uz=U[6*i+2];
+      maxT = Math.max(maxT, Math.hypot(ux,uy,uz));
+    }
+    if(maxT>0){
+      for(let i=0;i<ndof;i++) U[i] /= maxT;
+    }
+    fullModes.push(U);
+  }
+
+  return {freqHz, modes: fullModes, meta:{ndof, nFree: free.length, free} };
+}
+
+/* =========================
+   UI wiring
+   ========================= */
+function syncFromTextareas(){
+  const nodes = parseNodes(el.taNodes.value||"");
+  const elems = parseElems(el.taElems.value||"");
+  installNodes(nodes);
+  installElems(elems);
+  updateButtons();
+}
+
+el.btnResetNodes.addEventListener('click', ()=>{
+  el.taNodes.value = DEFAULT_NODES_TEXT;
+  logClear(); logLine("OK: Nodes reset.", "log-ok");
+  try{ syncFromTextareas(); } catch(e){ logLine(`ERROR: ${e.message}`, "log-err"); }
+});
+el.btnResetElems.addEventListener('click', ()=>{
+  el.taElems.value = DEFAULT_ELEMS_TEXT;
+  logClear(); logLine("OK: Segments reset.", "log-ok");
+  try{ syncFromTextareas(); } catch(e){ logLine(`ERROR: ${e.message}`, "log-err"); }
+});
+el.btnUseNodes.addEventListener('click', ()=>{
+  logClear(); setStatus("Parsing nodes...");
+  try{
+    const nodes=parseNodes(el.taNodes.value||"");
+    installNodes(nodes);
+    updateButtons();
+    logLine("OK: Nodes parsed/installed.", "log-ok");
+  }catch(e){ logLine(`ERROR: ${e.message}`, "log-err"); }
+  setStatus("Idle");
+});
+el.btnUseElems.addEventListener('click', ()=>{
+  logClear(); setStatus("Parsing segments...");
+  try{
+    const elems=parseElems(el.taElems.value||"");
+    installElems(elems);
+    updateButtons();
+    logLine("OK: Segments parsed/installed.", "log-ok");
+  }catch(e){ logLine(`ERROR: ${e.message}`, "log-err"); }
+  setStatus("Idle");
+});
+
+el.btnDraw.addEventListener('click', ()=>{
+  logClear(); setStatus("Validating...");
+  try{ syncFromTextareas(); }catch(e){ logLine(`ERROR: ${e.message}`, "log-err"); setStatus("Fix input"); return; }
+  if(!crossValidate()){ setStatus("Fix input"); return; }
+  View.isInteractive=true;
+  fitView3D(Model.nodes);
+  Model.isDrawn=true;
+  drawPrimary();
+  setStatus("Interactive");
+  logLine("OK: Frame drawn.", "log-ok");
+});
+
+el.btnSolveModes.addEventListener('click', ()=>{
+  logClear(); setStatus("Validating...");
+  try{ syncFromTextareas(); }catch(e){ logLine(`ERROR: ${e.message}`, "log-err"); setStatus("Fix input"); return; }
+  if(!crossValidate()){ setStatus("Fix input"); return; }
+
+  try{
+    setStatus("Assembling & solving modes...");
+    const res = solveFirst3Modes();
+    Model.lastModes = res;
+
+    logLine(`OK: Modes solved. Free DOF = ${res.meta.nFree} / ndof=${res.meta.ndof}`, "log-ok");
+    for(let i=0;i<res.freqHz.length;i++){
+      logLine(`Mode ${i+1}: f = ${res.freqHz[i].toFixed(4)} Hz`, "log-ok");
+    }
+
+    el.modeSelect.disabled=false;
+    el.btnToggleAnim.disabled=false;
+    el.amp.disabled=false;
+    el.speed.disabled=false;
+
+    renderSummary();
+    setStatus("Solved (select mode / animate)");
+
+    // show first mode overlay static (at amplitude)
+    const modeIdx = Number(el.modeSelect.value||0);
+    const U = res.modes[modeIdx];
+    drawPrimary({U, scale:Number(el.amp.value)||10});
+  }catch(e){
+    logLine(`ERROR: ${e.message}`, "log-err");
+    setStatus("Solve failed");
+  }
+});
+
+/* =========================
+   Animation
+   ========================= */
+let animOn=false;
+let t0=null;
+
+function drawSelectedModeAnimated(timeMs){
+  if(!Model.isDrawn) return;
+  if(!Model.lastModes) return;
+
+  const idx = Number(el.modeSelect.value||0);
+  const U = Model.lastModes.modes[idx];
+  const f = Model.lastModes.freqHz[idx] || 1;
+  const amp = Number(el.amp.value)||10;
+  const speed = Number(el.speed.value)||1;
+
+  if(t0==null) t0=timeMs;
+  const dt = (timeMs - t0)/1000;
+  const phase = 2*Math.PI*(f*speed)*dt;
+  const s = amp*Math.sin(phase);
+
+  drawPrimary({U, scale:s});
+
+  if(animOn) requestAnimationFrame(drawSelectedModeAnimated);
+}
+
+el.btnToggleAnim.addEventListener('click', ()=>{
+  if(!Model.lastModes) return;
+  animOn = !animOn;
+  el.btnToggleAnim.textContent = `Animate: ${animOn ? "On" : "Off"}`;
+  t0 = null;
+  if(animOn) requestAnimationFrame(drawSelectedModeAnimated);
+  else {
+    // redraw static at amplitude (peak)
+    const idx = Number(el.modeSelect.value||0);
+    const U = Model.lastModes.modes[idx];
+    drawPrimary({U, scale:Number(el.amp.value)||10});
+  }
+});
+
+el.modeSelect.addEventListener('change', ()=>{
+  if(!Model.lastModes) return;
+  const idx = Number(el.modeSelect.value||0);
+  const U = Model.lastModes.modes[idx];
+  // if anim on, keep running (it will pick up new idx). else draw static.
+  if(!animOn) drawPrimary({U, scale:Number(el.amp.value)||10});
+});
+el.amp.addEventListener('input', ()=>{
+  if(!Model.lastModes) return;
+  if(!animOn){
+    const idx = Number(el.modeSelect.value||0);
+    drawPrimary({U:Model.lastModes.modes[idx], scale:Number(el.amp.value)||10});
+  }
+});
+el.speed.addEventListener('input', ()=>{ /* picked up next frame */ });
+
+/* =========================
+   Basic hover picking (nodes/elements)
+   ========================= */
+function canvasPointFromEvent(evt){
+  const r = el.canvas.getBoundingClientRect();
+  return { x:(evt.clientX-r.left)*(el.canvas.width/r.width), y:(evt.clientY-r.top)*(el.canvas.height/r.height) };
+}
+function findNodeAtScreenPoint(sx, sy, tol=10){
+  for(const n of Model.nodes){
+    const p=project3D(n.x,n.y,n.z);
+    if(Math.hypot(p.x-sx,p.y-sy)<=tol) return n;
+  }
+  return null;
+}
+function findElemAtScreenPoint(sx, sy, tol=8){
+  for(const e of Model.elems){
+    const ni=Model.nodeById.get(e.ni), nj=Model.nodeById.get(e.nj);
+    if(!ni||!nj) continue;
+    const p1=project3D(ni.x,ni.y,ni.z), p2=project3D(nj.x,nj.y,nj.z);
+    const dx=p2.x-p1.x, dy=p2.y-p1.y;
+    const len2=dx*dx+dy*dy;
+    if(len2<1e-9) continue;
+    let t=((sx-p1.x)*dx+(sy-p1.y)*dy)/len2;
+    t=Math.max(0,Math.min(1,t));
+    const cx=p1.x+t*dx, cy=p1.y+t*dy;
+    if(Math.hypot(sx-cx,sy-cy)<=tol) return e;
+  }
+  return null;
+}
+function formatNodeTooltip(n){
+  const ux = n.ux.prescribed ? `Ux=${n.ux.value}` : "Ux=free";
+  const uy = n.uy.prescribed ? `Uy=${n.uy.value}` : "Uy=free";
+  const uz = n.uz.prescribed ? `Uz=${n.uz.value}` : "Uz=free";
+  const rx = n.rx.prescribed ? `Rx=${n.rx.value}` : "Rx=free";
+  const ry = n.ry.prescribed ? `Ry=${n.ry.value}` : "Ry=free";
+  const rz = n.rz.prescribed ? `Rz=${n.rz.value}` : "Rz=free";
+  return `Node ${n.id}: ${ux}, ${uy}, ${uz}, ${rx}, ${ry}, ${rz} | W=${n.W}`;
+}
+function formatElemTooltip(e){
+  return `Seg ${e.id}: ${e.ni}→${e.nj} | E=${e.E.toExponential(2)} G=${e.G.toExponential(2)} | A=${e.Ayz} rho=${e.rho}`;
+}
+
+/* =========================
+   Camera controls (orbit/pan/zoom)
+   ========================= */
+el.canvas.addEventListener('mousedown', (evt)=>{
+  if(!View.isInteractive) return;
+  View.dragging=true;
+  View.dragButton=evt.button;
+  View.dragStart = {
+    x:evt.clientX, y:evt.clientY,
+    azimuth:View.cam.azimuth, elevation:View.cam.elevation,
+    centerX:View.cam.centerX, centerY:View.cam.centerY, centerZ:View.cam.centerZ
+  };
+});
+window.addEventListener('mouseup', ()=>{ View.dragging=false; });
+window.addEventListener('mousemove', (evt)=>{
+  const p = canvasPointFromEvent(evt);
+  View.mousePos = p;
+
+  if(View.isInteractive && Model.isDrawn){
+    const n = findNodeAtScreenPoint(p.x,p.y);
+    const e = n ? null : findElemAtScreenPoint(p.x,p.y);
+    View.hoveredNode = n ? n.id : null;
+    View.hoveredElem = e ? e.id : null;
+    if(n) el.selInfo.textContent = formatNodeTooltip(n);
+    else if(e) el.selInfo.textContent = formatElemTooltip(e);
+    else el.selInfo.textContent = "";
+  }
+
+  if(!View.dragging) {
+    if(Model.isDrawn && !animOn){
+      if(Model.lastModes){
+        const idx = Number(el.modeSelect.value||0);
+        drawPrimary({U:Model.lastModes.modes[idx], scale:Number(el.amp.value)||10});
+      } else {
+        drawPrimary();
+      }
+    }
+    return;
+  }
+
+  const dx = evt.clientX - View.dragStart.x;
+  const dy = evt.clientY - View.dragStart.y;
+
+  if(View.dragButton===0){
+    View.cam.azimuth = View.dragStart.azimuth + dx*0.01;
+    View.cam.elevation = Math.max(-Math.PI/2+0.05, Math.min(Math.PI/2-0.05, View.dragStart.elevation - dy*0.01));
+  }else if(View.dragButton===2){
+    // screen-space pan approx
+    View.cam.centerX = View.dragStart.centerX - dx*0.05;
+    View.cam.centerY = View.dragStart.centerY + dy*0.05;
+  }
+
+  if(Model.isDrawn && !animOn){
+    if(Model.lastModes){
+      const idx = Number(el.modeSelect.value||0);
+      drawPrimary({U:Model.lastModes.modes[idx], scale:Number(el.amp.value)||10});
+    } else drawPrimary();
+  }
+});
+el.canvas.addEventListener('contextmenu', (e)=>e.preventDefault());
+el.canvas.addEventListener('wheel', (evt)=>{
+  if(!View.isInteractive) return;
+  evt.preventDefault();
+  const s = Math.exp(evt.deltaY*0.001);
+  View.cam.distance = Math.max(5, Math.min(5000, View.cam.distance*s));
+  if(Model.isDrawn && !animOn){
+    if(Model.lastModes){
+      const idx = Number(el.modeSelect.value||0);
+      drawPrimary({U:Model.lastModes.modes[idx], scale:Number(el.amp.value)||10});
+    } else drawPrimary();
+  }
+}, {passive:false});
+
+/* =========================
+   Init
+   ========================= */
+el.taNodes.value = DEFAULT_NODES_TEXT;
+el.taElems.value = DEFAULT_ELEMS_TEXT;
+try{ syncFromTextareas(); } catch(_){}
+renderSummary();
+updateButtons();
+</script>
+</body>
+</html>
