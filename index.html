@@ -38,7 +38,15 @@
   #log{margin-top:10px; padding:8px; background:#ffffff; border:1px solid var(--line); border-radius:8px; height:220px; overflow:auto; font-size:12px; line-height:1.25; white-space:pre-wrap;}
   .log-warn{color:var(--warn);} .log-err{color:var(--err);} .log-ok{color:var(--ok);}
   #vpBar{display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--muted); padding:0 2px;}
-  #selInfo{font-size:11px; color:var(--text); min-height:16px; padding:4px 6px; background:rgba(255,255,255,0.9); border-radius:6px; font-weight:500; line-height:1.3; word-break:break-word;}
+  #selInfo{
+    font-size:11px; color:var(--text);
+    min-height:16px; padding:6px 8px;
+    background:rgba(255,255,255,0.92);
+    border-radius:6px; font-weight:500;
+    line-height:1.35;
+    white-space:pre-wrap;
+    border:1px solid rgba(215,219,227,0.9);
+  }
 
   .row{display:flex; gap:8px;}
   .row > *{flex:1;}
@@ -163,6 +171,7 @@ const Model = {
   elems: [],
   nodeById: new Map(),
   elemById: new Map(),
+  nodeIndexById: new Map(),
   isDrawn: false,
   lastModes: null // {freqHz:[...], modes:[Float64Array ndof], meta:{...}}
 };
@@ -236,7 +245,7 @@ function resizeCanvas(){
   const rect = el.canvas.getBoundingClientRect();
   el.canvas.width = rect.width;
   el.canvas.height = rect.height;
-  if(Model.isDrawn) drawPrimary();
+  if(Model.isDrawn) requestRedraw();
 }
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
@@ -312,7 +321,7 @@ function normalizeHeader(h){
 }
 
 /* =========================
-   Parse nodes: node x y z delX delY delZ thetaXX thetaYY thetaZZ W
+   Parse nodes
    ========================= */
 function parseNodes(text){
   const lines = text.split(/\r?\n/);
@@ -388,7 +397,7 @@ function parseNodes(text){
 }
 
 /* =========================
-   Parse elems: elem ni nj E G Izz Iyy Jyz Ayz rho x3 y3 z3
+   Parse elems
    ========================= */
 function parseElems(text){
   const lines = text.split(/\r?\n/);
@@ -460,24 +469,39 @@ function parseElems(text){
 /* =========================
    Install / validate
    ========================= */
-function installNodes(nodes){
+
+function installNodes(nodes, opts={ resetView:true }){
+  const { resetView=true } = opts;
+
   Model.nodes = nodes;
   Model.nodeById = new Map(nodes.map(n=>[n.id,n]));
-  Model.isDrawn = false;
-  Model.lastModes = null;
-  View.hoveredNode = View.pinnedNode = null;
-  View.hoveredElem = View.pinnedElem = null;
+  // nodeIndexById is rebuilt in buildBcByDof() during assembly
+
+  if(resetView){
+    Model.isDrawn = false;
+    Model.lastModes = null;
+    View.hoveredNode = View.pinnedNode = null;
+    View.hoveredElem = View.pinnedElem = null;
+  }
   renderSummary();
 }
-function installElems(elems){
+
+function installElems(elems, opts={ resetView:true }){
+  const { resetView=true } = opts;
+
   Model.elems = elems;
   Model.elemById = new Map(elems.map(e=>[e.id,e]));
-  Model.isDrawn = false;
-  Model.lastModes = null;
-  View.hoveredNode = View.pinnedNode = null;
-  View.hoveredElem = View.pinnedElem = null;
+
+  if(resetView){
+    Model.isDrawn = false;
+    Model.lastModes = null;
+    View.hoveredNode = View.pinnedNode = null;
+    View.hoveredElem = View.pinnedElem = null;
+  }
   renderSummary();
 }
+
+
 function crossValidate(){
   let ok = true;
   for(const e of Model.elems){
@@ -513,7 +537,7 @@ function project3D(x, y, z){
     y: forward.z*worldUp.x - forward.x*worldUp.z,
     z: forward.x*worldUp.y - forward.y*worldUp.x
   };
-  const rL = Math.hypot(right.x,right.y,right.z);
+  const rL = Math.hypot(right.x,right.y,right.z) || 1;
   right.x/=rL; right.y/=rL; right.z/=rL;
 
   const up = {
@@ -546,7 +570,30 @@ function fitView3D(nodes){
 }
 
 /* =========================
-   Drawing
+   Redraw scheduler
+   ========================= */
+let _needsRedraw = false;
+function requestRedraw(){
+  if(_needsRedraw) return;
+  _needsRedraw = true;
+  requestAnimationFrame(()=>{ _needsRedraw=false; renderFrame(); });
+}
+function renderFrame(){
+  if(!Model.isDrawn) return;
+
+  // If anim is on, drawSelectedModeAnimated already renders frames continuously.
+  if(animOn) return;
+
+  if(Model.lastModes){
+    const idx = Number(el.modeSelect.value||0);
+    drawPrimary({U:Model.lastModes.modes[idx], scale:Number(el.amp.value)||10});
+  }else{
+    drawPrimary();
+  }
+}
+
+/* =========================
+   Drawing helpers
    ========================= */
 function clearCanvas(){
   ctx.clearRect(0,0,el.canvas.width,el.canvas.height);
@@ -598,6 +645,81 @@ function drawBCSymbol(n){
   ctx.restore();
 }
 
+/* =========================
+   Local axis triad (x3/y3/z3) for selected element
+   ========================= */
+function localAxesFromElem(ni, nj, e){
+  const dx = nj.x-ni.x, dy = nj.y-ni.y, dz = nj.z-ni.z;
+  const L = Math.hypot(dx,dy,dz);
+  if(L < 1e-12) return {ok:false, warn:"zero length", xhat:null, yhat:null, zhat:null};
+
+  const xhat = {x:dx/L, y:dy/L, z:dz/L};
+
+  const vx = e.x3 - ni.x, vy = e.y3 - ni.y, vz = e.z3 - ni.z;
+  const dot = vx*xhat.x + vy*xhat.y + vz*xhat.z;
+  const zx0 = vx - dot*xhat.x, zy0 = vy - dot*xhat.y, zz0 = vz - dot*xhat.z;
+  const zL = Math.hypot(zx0,zy0,zz0);
+  if(zL < 1e-12) return {ok:false, warn:"x3/y3/z3 collinear with element axis", xhat, yhat:null, zhat:null};
+
+  const zhat = {x:zx0/zL, y:zy0/zL, z:zz0/zL};
+
+  // y = z × x  (right-handed)
+  const yx = zhat.y*xhat.z - zhat.z*xhat.y;
+  const yy = zhat.z*xhat.x - zhat.x*xhat.z;
+  const yz = zhat.x*xhat.y - zhat.y*xhat.x;
+  const yL = Math.hypot(yx,yy,yz) || 1;
+  const yhat = {x:yx/yL, y:yy/yL, z:yz/yL};
+
+  return {ok:true, warn:null, xhat, yhat, zhat};
+}
+
+function drawLocalTriadForSelectedElem(){
+  const elemId = (View.pinnedElem!=null) ? View.pinnedElem : View.hoveredElem;
+  if(elemId==null) return;
+  const e = Model.elemById.get(elemId);
+  if(!e) return;
+  const ni=Model.nodeById.get(e.ni), nj=Model.nodeById.get(e.nj);
+  if(!ni||!nj) return;
+
+  const basis = localAxesFromElem(ni,nj,e);
+  if(!basis.ok) return;
+
+  const mx=(ni.x+nj.x)/2, my=(ni.y+nj.y)/2, mz=(ni.z+nj.z)/2;
+  const p0 = project3D(mx,my,mz);
+
+  // triad length in model units -> screen projected by project3D, so choose modest length
+  const Ltri = 18;
+  const px = project3D(mx + basis.xhat.x*Ltri, my + basis.xhat.y*Ltri, mz + basis.xhat.z*Ltri);
+  const py = project3D(mx + basis.yhat.x*Ltri, my + basis.yhat.y*Ltri, mz + basis.yhat.z*Ltri);
+  const pz = project3D(mx + basis.zhat.x*Ltri, my + basis.zhat.y*Ltri, mz + basis.zhat.z*Ltri);
+
+  ctx.save();
+  ctx.lineWidth = 2.2;
+
+  // x (red-ish)
+  ctx.strokeStyle = "rgba(220,38,38,0.95)";
+  ctx.beginPath(); ctx.moveTo(p0.x,p0.y); ctx.lineTo(px.x,px.y); ctx.stroke();
+  ctx.fillStyle = "rgba(220,38,38,0.95)";
+  ctx.fillText("x3", px.x+4, px.y+4);
+
+  // y (green-ish)
+  ctx.strokeStyle = "rgba(22,163,74,0.95)";
+  ctx.beginPath(); ctx.moveTo(p0.x,p0.y); ctx.lineTo(py.x,py.y); ctx.stroke();
+  ctx.fillStyle = "rgba(22,163,74,0.95)";
+  ctx.fillText("y3", py.x+4, py.y+4);
+
+  // z (blue-ish)
+  ctx.strokeStyle = "rgba(37,99,235,0.95)";
+  ctx.beginPath(); ctx.moveTo(p0.x,p0.y); ctx.lineTo(pz.x,pz.y); ctx.stroke();
+  ctx.fillStyle = "rgba(37,99,235,0.95)";
+  ctx.fillText("z3", pz.x+4, pz.y+4);
+
+  ctx.restore();
+}
+
+/* =========================
+   Main draw
+   ========================= */
 function drawPrimary(modeOverlay=null){
   clearCanvas();
   drawGrid3D();
@@ -620,28 +742,9 @@ function drawPrimary(modeOverlay=null){
   }
   ctx.restore();
 
-  // BCs
-  for(const n of Model.nodes) drawBCSymbol(n);
-
-  // nodes
-  for(const n of Model.nodes){
-    const p=project3D(n.x,n.y,n.z);
-    ctx.save();
-    const isHovered=(View.hoveredNode===n.id);
-    const isPinned=(View.pinnedNode===n.id);
-    const radius=(isHovered||isPinned)?6:4.2;
-    ctx.beginPath(); ctx.arc(p.x,p.y,radius,0,Math.PI*2);
-    ctx.fillStyle = isPinned ? "rgba(251,191,36,0.9)" :
-                   isHovered? "rgba(59,130,246,0.9)" :
-                              "rgba(37,99,235,0.65)";
-    ctx.fill();
-    if(isHovered||isPinned){ ctx.strokeStyle="rgba(255,255,255,0.9)"; ctx.lineWidth=2; ctx.stroke(); }
-    ctx.restore();
-  }
-
   // overlay selected mode shape (deformed polyline)
   if(modeOverlay){
-    const {U, scale} = modeOverlay; // U is full ndof in primary node order
+    const {U, scale} = modeOverlay;
     ctx.save();
     ctx.strokeStyle="rgba(220,38,38,0.85)";
     ctx.lineWidth=2.2;
@@ -660,6 +763,27 @@ function drawPrimary(modeOverlay=null){
     }
     ctx.restore();
   }
+
+  // BCs + nodes drawn on top
+  for(const n of Model.nodes) drawBCSymbol(n);
+
+  for(const n of Model.nodes){
+    const p=project3D(n.x,n.y,n.z);
+    ctx.save();
+    const isHovered=(View.hoveredNode===n.id);
+    const isPinned=(View.pinnedNode===n.id);
+    const radius=(isHovered||isPinned)?6:4.2;
+    ctx.beginPath(); ctx.arc(p.x,p.y,radius,0,Math.PI*2);
+    ctx.fillStyle = isPinned ? "rgba(251,191,36,0.9)" :
+                   isHovered? "rgba(59,130,246,0.9)" :
+                              "rgba(37,99,235,0.65)";
+    ctx.fill();
+    if(isHovered||isPinned){ ctx.strokeStyle="rgba(255,255,255,0.9)"; ctx.lineWidth=2; ctx.stroke(); }
+    ctx.restore();
+  }
+
+  // local triad for hovered/pinned element
+  drawLocalTriadForSelectedElem();
 }
 
 /* =========================
@@ -705,7 +829,6 @@ function build3DTransformationMatrix(ni, nj, x3, y3, z3){
 
 /* =========================
    12x12 Local Stiffness (space frame)
-   (same structure as your current 3D stiffness)
    ========================= */
 function elementLocalStiffness3D(E, G, A, Izz, Iyy, J, L){
   const EA_L = (E*A)/L;
@@ -722,17 +845,17 @@ function elementLocalStiffness3D(E, G, A, Izz, Iyy, J, L){
   k[0][0]=EA_L; k[0][6]=-EA_L;
   k[6][0]=-EA_L; k[6][6]=EA_L;
 
-  // torsion (about local x) -> rx DOFs (3,9)
+  // torsion
   k[3][3]=GJ_L; k[3][9]=-GJ_L;
   k[9][3]=-GJ_L; k[9][9]=GJ_L;
 
-  // bending in x-y plane: y disp (1,7) with z-rotation (5,11) using EIzz
+  // bending: y disp + z-rot uses EIzz
   k[1][1] = 12*EIzz_L3;   k[1][5] = 6*EIzz_L2;    k[1][7] = -12*EIzz_L3;  k[1][11]= 6*EIzz_L2;
   k[5][1] = 6*EIzz_L2;    k[5][5] = 4*EIzz_L;     k[5][7] = -6*EIzz_L2;   k[5][11]= 2*EIzz_L;
   k[7][1] = -12*EIzz_L3;  k[7][5] = -6*EIzz_L2;   k[7][7] = 12*EIzz_L3;   k[7][11]= -6*EIzz_L2;
   k[11][1]= 6*EIzz_L2;    k[11][5]= 2*EIzz_L;     k[11][7]= -6*EIzz_L2;   k[11][11]= 4*EIzz_L;
 
-  // bending in x-z plane: z disp (2,8) with y-rotation (4,10) using EIyy
+  // bending: z disp + y-rot uses EIyy
   k[2][2] = 12*EIyy_L3;   k[2][4] = -6*EIyy_L2;   k[2][8] = -12*EIyy_L3;  k[2][10]= -6*EIyy_L2;
   k[4][2] = -6*EIyy_L2;   k[4][4] = 4*EIyy_L;     k[4][8] = 6*EIyy_L2;    k[4][10]= 2*EIyy_L;
   k[8][2] = -12*EIyy_L3;  k[8][4] = 6*EIyy_L2;    k[8][8] = 12*EIyy_L3;   k[8][10]= 6*EIyy_L2;
@@ -743,38 +866,22 @@ function elementLocalStiffness3D(E, G, A, Izz, Iyy, J, L){
 
 /* =========================
    12x12 Consistent Mass (Euler–Bernoulli space frame)
-   DOF order: [ux uy uz rx ry rz, ux2 uy2 uz2 rx2 ry2 rz2]
-   Using standard axial + torsion + bending (y,z planes) consistent mass.
-   rho is mass density, A is area.
-   For torsional rotational inertia we use rho*J as polar mass moment per length.
-   For bending, standard 4x4 consistent mass for each plane.
    ========================= */
 function elementLocalMass3D(rho, A, Izz, Iyy, J, L){
   const m = rho*A*L; // total mass
-
   const M = Array.from({length:12}, ()=> new Float64Array(12));
 
-  // --- Axial (ux) consistent mass: (m/6) [2 1; 1 2]
   const ma = m/6;
   M[0][0] += 2*ma; M[0][6] += 1*ma;
   M[6][0] += 1*ma; M[6][6] += 2*ma;
 
-  // --- Torsion (rx): use polar mass moment per length: rho*J, consistent like axial
-  // Total torsional "mass" = rho*J*L
   const mt = (rho*J*L)/6;
   M[3][3] += 2*mt; M[3][9] += 1*mt;
   M[9][3] += 1*mt; M[9][9] += 2*mt;
 
-  // --- Bending in local y (uy with rz), uses EIzz stiffness plane -> uses transverse mass m
-  // Standard 4x4 EB beam consistent mass matrix for DOFs [v1, th1, v2, th2]:
-  // (m/420) * [[156, 22L, 54, -13L],
-  //            [22L, 4L^2, 13L, -3L^2],
-  //            [54, 13L, 156, -22L],
-  //            [-13L, -3L^2, -22L, 4L^2]]
   const c = m/420;
   const L2 = L*L;
 
-  // Map: v=uy => DOF 1, th=rz => DOF 5, v2=uy2 => DOF 7, th2=rz2 => DOF 11
   const mapY = [1,5,7,11];
   const My = [
     [156, 22*L, 54,  -13*L],
@@ -788,8 +895,6 @@ function elementLocalMass3D(rho, A, Izz, Iyy, J, L){
     }
   }
 
-  // --- Bending in local z (uz with ry)
-  // Map: v=uz => DOF 2, th=ry => DOF 4, v2=uz2 => DOF 8, th2=ry2 => DOF 10
   const mapZ = [2,4,8,10];
   const Mz = [
     [156, -22*L, 54,   13*L],
@@ -803,9 +908,6 @@ function elementLocalMass3D(rho, A, Izz, Iyy, J, L){
     }
   }
 
-  // NOTE: This matrix already includes the rotational inertia coupling terms via bending consistent mass.
-  // If you ever want to include additional "spin" inertia about y/z, you'd add rho*Iyy/zz terms similarly.
-
   return M;
 }
 
@@ -813,7 +915,6 @@ function elementLocalMass3D(rho, A, Izz, Iyy, J, L){
    BC condensation
    ========================= */
 function buildBcByDof(){
-  // Primary nodes in sorted id order -> dof order matches that
   const nodesSorted = [...Model.nodes].slice().sort((a,b)=>a.id-b.id);
   Model.nodeIndexById = new Map(nodesSorted.map((n,i)=>[n.id,i]));
 
@@ -844,7 +945,6 @@ function assembleKM(){
   const K = Array.from({length:ndof}, ()=> new Float64Array(ndof));
   const M = Array.from({length:ndof}, ()=> new Float64Array(ndof));
 
-  // Element assembly
   for(const e of Model.elems){
     const ni = Model.nodeById.get(e.ni);
     const nj = Model.nodeById.get(e.nj);
@@ -867,7 +967,6 @@ function assembleKM(){
 
     const T = build3DTransformationMatrix(ni, nj, e.x3, e.y3, e.z3);
 
-    // kg = T^T kL T
     const tmpK = Array.from({length:12}, ()=> new Float64Array(12));
     const tmpM = Array.from({length:12}, ()=> new Float64Array(12));
 
@@ -898,7 +997,6 @@ function assembleKM(){
       }
     }
 
-    // assemble
     for(let a=0;a<12;a++){
       const I = dofs[a];
       const Kr = K[I];
@@ -911,7 +1009,6 @@ function assembleKM(){
     }
   }
 
-  // Add nodal lumped masses from W/g to translational DOFs
   const g = getGravity();
   for(let i=0;i<N;i++){
     const n = nodesSorted[i];
@@ -939,7 +1036,6 @@ function solveFirst3Modes(){
   }
   if(free.length===0) throw new Error("All DOFs prescribed; no modal DOFs.");
 
-  // Build dense Kff and Mff as JS arrays (numeric.js expects arrays-of-arrays)
   const Kff = Array.from({length:free.length}, ()=> Array(free.length).fill(0));
   const Mff = Array.from({length:free.length}, ()=> Array(free.length).fill(0));
 
@@ -952,31 +1048,25 @@ function solveFirst3Modes(){
     }
   }
 
-  // Solve generalized eigen via A = inv(Mff) * Kff
-  // (For symmetric positive definite Mff, this is OK for small/medium problems.)
   const Minv = numeric.inv(Mff);
   const A = numeric.dot(Minv, Kff);
 
-  const eig = numeric.eig(A); // returns {lambda:{x:[]}, E:{x:[[]]}} for real
+  const eig = numeric.eig(A);
   const lam = eig.lambda.x;
-  const V = eig.E.x; // columns are eigenvectors in numeric.js
+  const V = eig.E.x;
 
-  // Collect positive real lambdas
   const modes = [];
   for(let i=0;i<lam.length;i++){
     const li = lam[i];
     if(!Number.isFinite(li) || li<=1e-10) continue;
-    modes.push({lambda: li, vec: V.map(row => row[i])}); // vec length = nFree
+    modes.push({lambda: li, vec: V.map(row => row[i])});
   }
   if(modes.length===0) throw new Error("No positive eigenvalues found (check constraints/mass).");
 
-  // Sort ascending
   modes.sort((a,b)=>a.lambda-b.lambda);
 
-  // Take first 3
   const take = modes.slice(0,3);
 
-  // Build full ndof mode vectors (including fixed DOFs as 0)
   const fullModes = [];
   const freqHz = [];
   for(const m of take){
@@ -989,7 +1079,6 @@ function solveFirst3Modes(){
       U[free[k]] = m.vec[k];
     }
 
-    // Normalize: max translational magnitude among nodes = 1
     let maxT = 0;
     for(let i=0;i<ndof/6;i++){
       const ux=U[6*i+0], uy=U[6*i+1], uz=U[6*i+2];
@@ -1005,13 +1094,67 @@ function solveFirst3Modes(){
 }
 
 /* =========================
+   Selection info panels
+   ========================= */
+function fmtDOF(d, name){ return d.prescribed ? `${name}=${d.value}` : `${name}=free`; }
+
+function showNodeInfo(node){
+  const lines = [];
+  lines.push(`NODE ${node.id}`);
+  lines.push(`  xyz = (${node.x}, ${node.y}, ${node.z})`);
+  lines.push(`  BCs: ${fmtDOF(node.ux,"Ux")}, ${fmtDOF(node.uy,"Uy")}, ${fmtDOF(node.uz,"Uz")}, ${fmtDOF(node.rx,"Rx")}, ${fmtDOF(node.ry,"Ry")}, ${fmtDOF(node.rz,"Rz")}`);
+  lines.push(`  W = ${Number(node.W||0)}`);
+
+  if(Model.lastModes){
+    const mi = Number(el.modeSelect.value||0);
+    const idx = Model.nodeIndexById.get(node.id);
+    if(idx!=null){
+      const U = Model.lastModes.modes[mi];
+      const ux = U[6*idx+0], uy = U[6*idx+1], uz = U[6*idx+2];
+      const rx = U[6*idx+3], ry = U[6*idx+4], rz = U[6*idx+5];
+      lines.push(`  Mode ${mi+1} φ @ node:`);
+      lines.push(`    (ux,uy,uz) = (${ux.toExponential(3)}, ${uy.toExponential(3)}, ${uz.toExponential(3)})`);
+      lines.push(`    (rx,ry,rz) = (${rx.toExponential(3)}, ${ry.toExponential(3)}, ${rz.toExponential(3)})`);
+    }
+  }
+  el.selInfo.textContent = lines.join("\n");
+}
+
+function showElemInfo(e){
+  const ni=Model.nodeById.get(e.ni), nj=Model.nodeById.get(e.nj);
+  let L = NaN;
+  if(ni && nj) L = Math.hypot(nj.x-ni.x, nj.y-ni.y, nj.z-ni.z);
+
+  const lines = [];
+  lines.push(`SEGMENT ${e.id}: ${e.ni} → ${e.nj}`);
+  lines.push(`  L = ${Number.isFinite(L) ? L.toFixed(6) : "?"}`);
+  lines.push(`  E=${e.E}, G=${e.G}`);
+  lines.push(`  Izz=${e.Izz}, Iyy=${e.Iyy}, J=${e.Jyz}, A=${e.Ayz}, rho=${e.rho||0}`);
+  lines.push(`  x3/y3/z3 = (${e.x3}, ${e.y3}, ${e.z3})`);
+  if(ni && nj){
+    const basis = localAxesFromElem(ni,nj,e);
+    if(basis.ok){
+      lines.push(`  local axes (global):`);
+      lines.push(`    x̂=(${basis.xhat.x.toFixed(4)}, ${basis.xhat.y.toFixed(4)}, ${basis.xhat.z.toFixed(4)})`);
+      lines.push(`    ŷ=(${basis.yhat.x.toFixed(4)}, ${basis.yhat.y.toFixed(4)}, ${basis.yhat.z.toFixed(4)})`);
+      lines.push(`    ẑ=(${basis.zhat.x.toFixed(4)}, ${basis.zhat.y.toFixed(4)}, ${basis.zhat.z.toFixed(4)})`);
+    } else {
+      lines.push(`  ⚠ ${basis.warn}`);
+    }
+  }
+  el.selInfo.textContent = lines.join("\n");
+}
+
+/* =========================
    UI wiring
    ========================= */
-function syncFromTextareas(){
+
+
+function syncFromTextareas(resetView=true){
   const nodes = parseNodes(el.taNodes.value||"");
   const elems = parseElems(el.taElems.value||"");
-  installNodes(nodes);
-  installElems(elems);
+  installNodes(nodes, { resetView });
+  installElems(elems, { resetView });
   updateButtons();
 }
 
@@ -1053,14 +1196,15 @@ el.btnDraw.addEventListener('click', ()=>{
   View.isInteractive=true;
   fitView3D(Model.nodes);
   Model.isDrawn=true;
-  drawPrimary();
+  requestRedraw();
   setStatus("Interactive");
   logLine("OK: Frame drawn.", "log-ok");
 });
 
 el.btnSolveModes.addEventListener('click', ()=>{
   logClear(); setStatus("Validating...");
-  try{ syncFromTextareas(); }catch(e){ logLine(`ERROR: ${e.message}`, "log-err"); setStatus("Fix input"); return; }
+  try{ syncFromTextareas(false); } // << preserve Model.isDrawn + pins
+  catch(e){ logLine(`ERROR: ${e.message}`, "log-err"); setStatus("Fix input"); return; }
   if(!crossValidate()){ setStatus("Fix input"); return; }
 
   try{
@@ -1078,18 +1222,19 @@ el.btnSolveModes.addEventListener('click', ()=>{
     el.amp.disabled=false;
     el.speed.disabled=false;
 
+    // Ensure we are drawable/clickable even if user never pressed Draw
+    View.isInteractive = true;
+    Model.isDrawn = true;
+
     renderSummary();
     setStatus("Solved (select mode / animate)");
-
-    // show first mode overlay static (at amplitude)
-    const modeIdx = Number(el.modeSelect.value||0);
-    const U = res.modes[modeIdx];
-    drawPrimary({U, scale:Number(el.amp.value)||10});
+    requestRedraw();
   }catch(e){
     logLine(`ERROR: ${e.message}`, "log-err");
     setStatus("Solve failed");
   }
 });
+
 
 /* =========================
    Animation
@@ -1098,8 +1243,8 @@ let animOn=false;
 let t0=null;
 
 function drawSelectedModeAnimated(timeMs){
-  if(!Model.isDrawn) return;
-  if(!Model.lastModes) return;
+  if(!Model.isDrawn) { animOn=false; return; }
+  if(!Model.lastModes) { animOn=false; return; }
 
   const idx = Number(el.modeSelect.value||0);
   const U = Model.lastModes.modes[idx];
@@ -1123,32 +1268,22 @@ el.btnToggleAnim.addEventListener('click', ()=>{
   el.btnToggleAnim.textContent = `Animate: ${animOn ? "On" : "Off"}`;
   t0 = null;
   if(animOn) requestAnimationFrame(drawSelectedModeAnimated);
-  else {
-    // redraw static at amplitude (peak)
-    const idx = Number(el.modeSelect.value||0);
-    const U = Model.lastModes.modes[idx];
-    drawPrimary({U, scale:Number(el.amp.value)||10});
-  }
+  else requestRedraw();
 });
 
 el.modeSelect.addEventListener('change', ()=>{
   if(!Model.lastModes) return;
-  const idx = Number(el.modeSelect.value||0);
-  const U = Model.lastModes.modes[idx];
-  // if anim on, keep running (it will pick up new idx). else draw static.
-  if(!animOn) drawPrimary({U, scale:Number(el.amp.value)||10});
+  if(!animOn) requestRedraw();
+  // if animOn, next frame uses new mode automatically
 });
 el.amp.addEventListener('input', ()=>{
   if(!Model.lastModes) return;
-  if(!animOn){
-    const idx = Number(el.modeSelect.value||0);
-    drawPrimary({U:Model.lastModes.modes[idx], scale:Number(el.amp.value)||10});
-  }
+  if(!animOn) requestRedraw();
 });
 el.speed.addEventListener('input', ()=>{ /* picked up next frame */ });
 
 /* =========================
-   Basic hover picking (nodes/elements)
+   Picking (hover + click pin)
    ========================= */
 function canvasPointFromEvent(evt){
   const r = el.canvas.getBoundingClientRect();
@@ -1189,12 +1324,71 @@ function formatElemTooltip(e){
   return `Seg ${e.id}: ${e.ni}→${e.nj} | E=${e.E.toExponential(2)} G=${e.G.toExponential(2)} | A=${e.Ayz} rho=${e.rho}`;
 }
 
+el.canvas.addEventListener('mousemove', (evt)=>{
+  const p = canvasPointFromEvent(evt);
+  View.mousePos = p;
+
+  if(View.isInteractive && Model.isDrawn){
+    const n = findNodeAtScreenPoint(p.x,p.y);
+    const e = n ? null : findElemAtScreenPoint(p.x,p.y);
+
+    const prevHN = View.hoveredNode, prevHE = View.hoveredElem;
+    View.hoveredNode = n ? n.id : null;
+    View.hoveredElem = e ? e.id : null;
+
+    // show hover tooltip only if nothing pinned
+    if(View.pinnedNode==null && View.pinnedElem==null){
+      if(n) el.selInfo.textContent = formatNodeTooltip(n);
+      else if(e) el.selInfo.textContent = formatElemTooltip(e);
+      else el.selInfo.textContent = "";
+    }
+
+    // redraw only if hover target changed (and not animating)
+    if(!animOn && (prevHN!==View.hoveredNode || prevHE!==View.hoveredElem)){
+      requestRedraw();
+    }
+  }
+
+  // camera interaction handled elsewhere
+});
+
+el.canvas.addEventListener('click', (evt)=>{
+  if(!View.isInteractive || !Model.isDrawn) return;
+  // Don't treat click as selection if it was a drag
+  if(View._dragMoved) return;
+
+  const p = canvasPointFromEvent(evt);
+  const n = findNodeAtScreenPoint(p.x,p.y,10);
+  if(n){
+    View.pinnedNode = n.id;
+    View.pinnedElem = null;
+    showNodeInfo(n);
+    requestRedraw();
+    return;
+  }
+  const e = findElemAtScreenPoint(p.x,p.y,8);
+  if(e){
+    View.pinnedElem = e.id;
+    View.pinnedNode = null;
+    showElemInfo(e);
+    requestRedraw();
+    return;
+  }
+
+  // click empty space clears pin
+  View.pinnedNode = null;
+  View.pinnedElem = null;
+  el.selInfo.textContent = "";
+  requestRedraw();
+});
+
 /* =========================
    Camera controls (orbit/pan/zoom)
    ========================= */
 el.canvas.addEventListener('mousedown', (evt)=>{
   if(!View.isInteractive) return;
   View.dragging=true;
+  View._dragMoved=false;
   View.dragButton=evt.button;
   View.dragStart = {
     x:evt.clientX, y:evt.clientY,
@@ -1204,49 +1398,21 @@ el.canvas.addEventListener('mousedown', (evt)=>{
 });
 window.addEventListener('mouseup', ()=>{ View.dragging=false; });
 window.addEventListener('mousemove', (evt)=>{
-  const p = canvasPointFromEvent(evt);
-  View.mousePos = p;
-
-  if(View.isInteractive && Model.isDrawn){
-    const n = findNodeAtScreenPoint(p.x,p.y);
-    const e = n ? null : findElemAtScreenPoint(p.x,p.y);
-    View.hoveredNode = n ? n.id : null;
-    View.hoveredElem = e ? e.id : null;
-    if(n) el.selInfo.textContent = formatNodeTooltip(n);
-    else if(e) el.selInfo.textContent = formatElemTooltip(e);
-    else el.selInfo.textContent = "";
-  }
-
-  if(!View.dragging) {
-    if(Model.isDrawn && !animOn){
-      if(Model.lastModes){
-        const idx = Number(el.modeSelect.value||0);
-        drawPrimary({U:Model.lastModes.modes[idx], scale:Number(el.amp.value)||10});
-      } else {
-        drawPrimary();
-      }
-    }
-    return;
-  }
+  if(!View.dragging) return;
 
   const dx = evt.clientX - View.dragStart.x;
   const dy = evt.clientY - View.dragStart.y;
+  if(Math.hypot(dx,dy) > 2) View._dragMoved=true;
 
   if(View.dragButton===0){
     View.cam.azimuth = View.dragStart.azimuth + dx*0.01;
     View.cam.elevation = Math.max(-Math.PI/2+0.05, Math.min(Math.PI/2-0.05, View.dragStart.elevation - dy*0.01));
   }else if(View.dragButton===2){
-    // screen-space pan approx
     View.cam.centerX = View.dragStart.centerX - dx*0.05;
     View.cam.centerY = View.dragStart.centerY + dy*0.05;
   }
 
-  if(Model.isDrawn && !animOn){
-    if(Model.lastModes){
-      const idx = Number(el.modeSelect.value||0);
-      drawPrimary({U:Model.lastModes.modes[idx], scale:Number(el.amp.value)||10});
-    } else drawPrimary();
-  }
+  if(!animOn) requestRedraw();
 });
 el.canvas.addEventListener('contextmenu', (e)=>e.preventDefault());
 el.canvas.addEventListener('wheel', (evt)=>{
@@ -1254,12 +1420,7 @@ el.canvas.addEventListener('wheel', (evt)=>{
   evt.preventDefault();
   const s = Math.exp(evt.deltaY*0.001);
   View.cam.distance = Math.max(5, Math.min(5000, View.cam.distance*s));
-  if(Model.isDrawn && !animOn){
-    if(Model.lastModes){
-      const idx = Number(el.modeSelect.value||0);
-      drawPrimary({U:Model.lastModes.modes[idx], scale:Number(el.amp.value)||10});
-    } else drawPrimary();
-  }
+  if(!animOn) requestRedraw();
 }, {passive:false});
 
 /* =========================
@@ -1271,5 +1432,4 @@ try{ syncFromTextareas(); } catch(_){}
 renderSummary();
 updateButtons();
 </script>
-</body>
-</html>
+
